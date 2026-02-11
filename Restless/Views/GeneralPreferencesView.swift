@@ -18,12 +18,31 @@ struct GeneralPreferencesView: View {
                             loginItemManager.enable()
                         } else {
                             loginItemManager.disable()
+                            settings.startKeepAwakeOnLogin = false
                         }
                         settings.launchAtLogin = newValue
                         settings.save()
                     }
                 ))
                 .help("Start Restless automatically when you log in")
+
+                Toggle("Start Keep-Awake on Login", isOn: Binding(
+                    get: { settings.startKeepAwakeOnLogin },
+                    set: { newValue in
+                        settings.startKeepAwakeOnLogin = newValue
+                        settings.save()
+                    }
+                ))
+                .disabled(!loginItemManager.isEnabled)
+                .help("Automatically start a Keep-Awake session when Restless launches at login")
+
+                if !loginItemManager.isEnabled && settings.startKeepAwakeOnLogin {
+                    // Safety: clear the setting if launch at login is off
+                    Color.clear.frame(height: 0).onAppear {
+                        settings.startKeepAwakeOnLogin = false
+                        settings.save()
+                    }
+                }
 
                 if let error = loginItemManager.lastError {
                     Text(error)

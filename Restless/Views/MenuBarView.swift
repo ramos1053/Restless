@@ -106,7 +106,8 @@ final class MenuBarController: NSObject, ObservableObject {
             tooltip += " (\(keepAwakeManager.methodStatus))"
         }
         if caffeinateManager.isRunning {
-            tooltip += "\nCaffeinate: \(caffeinateManager.targetAppName ?? "Active")"
+            let names = caffeinateManager.targetAppNames.joined(separator: ", ")
+            tooltip += "\nCaffeinate: \(names.isEmpty ? "Active" : names)"
             tooltip += " (\(caffeinateManager.methodStatus))"
         }
         button.toolTip = tooltip
@@ -179,7 +180,8 @@ final class MenuBarController: NSObject, ObservableObject {
 
         // Caffeinate App status
         if caffeinateManager.isRunning {
-            let caffeinateStatus = "Caffeinate: \(caffeinateManager.targetAppName ?? "Active") (\(caffeinateManager.eventCount) events)"
+            let appCountStr = "\(caffeinateManager.activeTargetCount) app\(caffeinateManager.activeTargetCount == 1 ? "" : "s")"
+            let caffeinateStatus = "Caffeinate: \(appCountStr) (\(caffeinateManager.totalEventCount) events)"
             let caffeinateItem = NSMenuItem(title: caffeinateStatus, action: nil, keyEquivalent: "")
             caffeinateItem.isEnabled = false
 
@@ -243,8 +245,11 @@ final class MenuBarController: NSObject, ObservableObject {
         menu?.addItem(NSMenuItem.separator())
 
         // Toggle Caffeinate App
-        if settings.caffeinateAppBundleID != nil {
-            let caffeinateTitle = caffeinateManager.isRunning ? "Stop Caffeinate" : "Start Caffeinate"
+        if !settings.caffeinateTargets.isEmpty {
+            let targetCount = settings.caffeinateTargets.count
+            let caffeinateTitle = caffeinateManager.isRunning
+                ? "Stop Caffeinate"
+                : "Start Caffeinate (\(targetCount) app\(targetCount == 1 ? "" : "s"))"
             let caffeinateItem = NSMenuItem(title: caffeinateTitle, action: #selector(toggleCaffeinate), keyEquivalent: "c")
             caffeinateItem.target = self
             menu?.addItem(caffeinateItem)
@@ -259,8 +264,11 @@ final class MenuBarController: NSObject, ObservableObject {
         if caffeinateManager.isRunning {
             caffeinateManager.stop()
             settings.caffeinateAppEnabled = false
-        } else if let bundleID = settings.caffeinateAppBundleID {
-            caffeinateManager.start(bundleID: bundleID, intervalSeconds: settings.caffeinateAppIntervalSeconds)
+        } else if !settings.caffeinateTargets.isEmpty {
+            caffeinateManager.startAll(
+                targets: settings.caffeinateTargets,
+                intervalSeconds: settings.caffeinateAppIntervalSeconds
+            )
             settings.caffeinateAppEnabled = true
         }
         settings.save()

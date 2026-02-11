@@ -6,26 +6,38 @@ import IOKit.pwr_mgt
 
 // MARK: - Caffeinate App Manager
 
-/// Manages keeping a background app active by sending periodic invisible events to its process.
+/// Manages keeping background apps active by sending periodic invisible events to their processes.
 /// This allows apps to show the user as "Active" without moving the cursor.
+/// Supports up to 10 simultaneous targets.
 final class CaffeinateAppManager: ObservableObject {
 
     // MARK: - Singleton
 
     static let shared = CaffeinateAppManager()
 
+    // MARK: - Internal Session
+
+    /// Tracks state for a single caffeinated app.
+    private struct CaffeinateSession {
+        let bundleID: String
+        let appName: String
+        var pid: Int32
+        var eventCount: Int = 0
+        var lastEventTime: Date?
+    }
+
     // MARK: - Published State
 
-    /// Whether caffeinate is currently running.
+    /// Whether any caffeinate session is currently running.
     @Published private(set) var isRunning: Bool = false
 
-    /// The name of the app being caffeinated.
-    @Published private(set) var targetAppName: String?
+    /// Names of all apps being caffeinated.
+    @Published private(set) var targetAppNames: [String] = []
 
-    /// Number of activity events sent.
-    @Published private(set) var eventCount: Int = 0
+    /// Total number of activity events sent across all sessions.
+    @Published private(set) var totalEventCount: Int = 0
 
-    /// Last time an event was sent.
+    /// Last time an event was sent (most recent across all sessions).
     @Published private(set) var lastEventTime: Date?
 
     /// Which prevention method is currently active.
@@ -36,6 +48,9 @@ final class CaffeinateAppManager: ObservableObject {
 
     /// Whether mouse events are working (requires accessibility).
     @Published private(set) var mouseEventsWorking: Bool = false
+
+    /// Number of active target sessions.
+    var activeTargetCount: Int { sessions.count }
 
     /// Computed convenience for health checks.
     var isHealthy: Bool { methodStatus.isHealthy }
@@ -54,8 +69,7 @@ final class CaffeinateAppManager: ObservableObject {
     // MARK: - Private Properties
 
     private var timer: Timer?
-    private var targetBundleID: String?
-    private var targetPID: Int32?  // Security: Track PID for verification
+    private var sessions: [String: CaffeinateSession] = [:] // keyed by bundleID
     private var intervalSeconds: Int = 30
     private let logger = AppLogger.shared
 
@@ -105,20 +119,16 @@ final class CaffeinateAppManager: ObservableObject {
         return app.activationPolicy == .regular || app.activationPolicy == .accessory
     }
 
-    /// Verifies the target process is still valid and hasn't been replaced.
+    /// Verifies a session's target process is still valid and hasn't been replaced.
     /// Security: Prevents PID reuse attacks.
-    private func verifyTargetProcess() -> NSRunningApplication? {
-        guard let bundleID = targetBundleID, let expectedPID = targetPID else {
-            return nil
-        }
-
-        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) else {
+    private func verifySessionProcess(_ session: CaffeinateSession) -> NSRunningApplication? {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == session.bundleID }) else {
             return nil
         }
 
         // Security: Verify PID hasn't changed (process was replaced)
-        guard app.processIdentifier == expectedPID else {
-            logger.warning("Security: Target process PID changed, stopping caffeinate")
+        guard app.processIdentifier == session.pid else {
+            logger.warning("Security: Target process PID changed for \(session.appName), removing session")
             return nil
         }
 
@@ -127,11 +137,17 @@ final class CaffeinateAppManager: ObservableObject {
 
     // MARK: - Public Methods
 
-    /// Starts caffeinating the specified app.
-    func start(bundleID: String, intervalSeconds: Int = 30) {
+    /// Starts caffeinating a single target app. Adds to existing sessions.
+    func startTarget(bundleID: String, appName: String, intervalSeconds: Int = 30) {
         // Security: Validate bundle ID
         guard !bundleID.isEmpty else {
             logger.warning("Cannot start caffeinate: no bundle ID specified")
+            return
+        }
+
+        // Don't add duplicates
+        guard sessions[bundleID] == nil else {
+            logger.info("Already caffeinating \(appName)")
             return
         }
 
@@ -143,64 +159,85 @@ final class CaffeinateAppManager: ObservableObject {
 
         // Verify the app is running
         guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) else {
-            logger.warning("Cannot start caffeinate: app with bundle ID is not running")
+            logger.warning("Cannot start caffeinate: app '\(appName)' is not running")
             return
         }
 
-        // Security: Sanitize interval to prevent DoS
+        // Security: Sanitize interval
         let sanitizedInterval = sanitizeInterval(intervalSeconds)
-
-        self.targetBundleID = bundleID
-        self.targetAppName = app.localizedName
-        self.targetPID = app.processIdentifier  // Security: Track PID for verification
         self.intervalSeconds = sanitizedInterval
-        self.eventCount = 0
-        self.isRunning = true
 
-        // Set initial health based on accessibility permission
-        let hasAccessibility = TargetingManager.shared.hasAccessibilityPermissions
-        self.mouseEventsWorking = hasAccessibility
-        self.activeMethod = .caffeinate
+        let session = CaffeinateSession(
+            bundleID: bundleID,
+            appName: app.localizedName ?? appName,
+            pid: app.processIdentifier
+        )
+        sessions[bundleID] = session
 
-        if hasAccessibility {
-            self.methodStatus = .healthy(method: .caffeinate)
-        } else {
-            self.methodStatus = .degraded(method: .caffeinate, reason: "No accessibility permission")
-            logger.warning("Caffeinate started without accessibility - mouse events disabled")
+        updatePublishedState()
+
+        // Start timer if this is the first session
+        if sessions.count == 1 {
+            let hasAccessibility = TargetingManager.shared.hasAccessibilityPermissions
+            self.mouseEventsWorking = hasAccessibility
+            self.activeMethod = .caffeinate
+
+            if hasAccessibility {
+                self.methodStatus = .healthy(method: .caffeinate)
+            } else {
+                self.methodStatus = .degraded(method: .caffeinate, reason: "No accessibility permission")
+                logger.warning("Caffeinate started without accessibility - mouse events disabled")
+            }
+
+            startTimer()
         }
 
-        // Start the timer
-        startTimer()
+        // Send an initial event to this target
+        sendActivityEventForSession(session, hasAccessibility: TargetingManager.shared.hasAccessibilityPermissions)
 
-        // Send an initial event
-        sendActivityEvent()
-
-        logger.info("Started caffeinating app every \(sanitizedInterval) seconds")
+        logger.info("Started caffeinating \(session.appName) (total targets: \(sessions.count))")
 
         NotificationCenter.default.post(name: .caffeinateStateDidChange, object: nil)
         NotificationCenter.default.post(name: .methodStatusDidChange, object: nil)
     }
 
-    /// Stops caffeinating.
-    func stop() {
-        timer?.invalidate()
-        timer = nil
+    /// Stops caffeinating a single target app.
+    func stopTarget(bundleID: String) {
+        guard let session = sessions.removeValue(forKey: bundleID) else { return }
 
-        // Release user activity assertion
-        releaseUserActivityAssertion()
+        logger.info("Stopped caffeinating \(session.appName) after \(session.eventCount) events (remaining targets: \(sessions.count))")
 
-        targetBundleID = nil
-        targetAppName = nil
-        targetPID = nil  // Security: Clear tracked PID
-        isRunning = false
-        activeMethod = .none
-        methodStatus = .inactive
-        mouseEventsWorking = false
-
-        logger.info("Stopped caffeinating after \(eventCount) events")
+        if sessions.isEmpty {
+            stopInternal()
+        } else {
+            updatePublishedState()
+        }
 
         NotificationCenter.default.post(name: .caffeinateStateDidChange, object: nil)
         NotificationCenter.default.post(name: .methodStatusDidChange, object: nil)
+    }
+
+    /// Starts caffeinating all provided targets.
+    func startAll(targets: [CaffeinateTarget], intervalSeconds: Int = 30) {
+        for target in targets {
+            startTarget(bundleID: target.bundleID, appName: target.appName, intervalSeconds: intervalSeconds)
+        }
+    }
+
+    /// Stops all caffeinate sessions.
+    func stopAll() {
+        let totalEvents = sessions.values.reduce(0) { $0 + $1.eventCount }
+        sessions.removeAll()
+        stopInternal()
+        logger.info("Stopped all caffeinate sessions after \(totalEvents) total events")
+
+        NotificationCenter.default.post(name: .caffeinateStateDidChange, object: nil)
+        NotificationCenter.default.post(name: .methodStatusDidChange, object: nil)
+    }
+
+    /// Stops caffeinating (alias for stopAll).
+    func stop() {
+        stopAll()
     }
 
     /// Updates the interval while running.
@@ -213,64 +250,112 @@ final class CaffeinateAppManager: ObservableObject {
 
     // MARK: - Private Methods
 
+    /// Clears timer and resets state when no sessions remain.
+    private func stopInternal() {
+        timer?.invalidate()
+        timer = nil
+
+        // Release user activity assertion
+        releaseUserActivityAssertion()
+
+        activeMethod = .none
+        methodStatus = .inactive
+        mouseEventsWorking = false
+
+        updatePublishedState()
+    }
+
+    /// Updates published properties from current sessions.
+    private func updatePublishedState() {
+        isRunning = !sessions.isEmpty
+        targetAppNames = sessions.values.map { $0.appName }.sorted()
+        totalEventCount = sessions.values.reduce(0) { $0 + $1.eventCount }
+        lastEventTime = sessions.values.compactMap { $0.lastEventTime }.max()
+    }
+
     private func startTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: TimeInterval(intervalSeconds), repeats: true) { [weak self] _ in
-            self?.sendActivityEvent()
+            self?.sendActivityEvents()
         }
     }
 
-    /// Sends invisible activity events to the target process.
-    private func sendActivityEvent() {
-        // Security: Verify target process is still valid and PID hasn't been reused
-        guard let app = verifyTargetProcess() else {
-            logger.warning("Target app is no longer valid")
-            stop()
+    /// Sends invisible activity events to all target processes.
+    private func sendActivityEvents() {
+        guard !sessions.isEmpty else { return }
+
+        let hasAccessibility = TargetingManager.shared.hasAccessibilityPermissions
+
+        // Update accessibility status
+        if hasAccessibility && !mouseEventsWorking {
+            mouseEventsWorking = true
+            methodStatus = .healthy(method: .caffeinate)
+            logger.info("Mouse events restored (accessibility permission granted)")
+            NotificationCenter.default.post(name: .methodStatusDidChange, object: nil)
+        } else if !hasAccessibility && mouseEventsWorking {
+            mouseEventsWorking = false
+            methodStatus = .degraded(method: .caffeinate, reason: "No accessibility permission")
+            logger.warning("Accessibility permission lost - mouse events disabled, using caffeinate -u only")
+            NotificationCenter.default.post(name: .methodStatusDidChange, object: nil)
+        }
+
+        // Send events to each session
+        var invalidBundleIDs: [String] = []
+
+        for (bundleID, session) in sessions {
+            guard let app = verifySessionProcess(session) else {
+                invalidBundleIDs.append(bundleID)
+                continue
+            }
+
+            sendActivityEventForSession(session, hasAccessibility: hasAccessibility, app: app)
+
+            // Update session state
+            sessions[bundleID]?.eventCount += 1
+            sessions[bundleID]?.lastEventTime = Date()
+        }
+
+        // Remove dead sessions
+        for bundleID in invalidBundleIDs {
+            if let session = sessions.removeValue(forKey: bundleID) {
+                logger.warning("Target app '\(session.appName)' is no longer valid, removed from sessions")
+            }
+        }
+
+        // If all sessions died, stop entirely
+        if sessions.isEmpty {
+            stopInternal()
+            NotificationCenter.default.post(name: .caffeinateStateDidChange, object: nil)
+            NotificationCenter.default.post(name: .methodStatusDidChange, object: nil)
             return
         }
 
-        let pid = app.processIdentifier
-
-        // Check accessibility permission for mouse events
-        let hasAccessibility = TargetingManager.shared.hasAccessibilityPermissions
-
-        if hasAccessibility {
-            // Send invisible mouse events to keep the app active
-            let position = getTargetPosition(for: app)
-            sendMouseMoveToProcess(pid: pid, position: position)
-            let offsetPosition = CGPoint(x: position.x + 1, y: position.y)
-            sendMouseMoveToProcess(pid: pid, position: offsetPosition)
-            sendMouseMoveToProcess(pid: pid, position: position)
-
-            // Send a shift key press/release to reset idle timers in web apps
-            sendKeyEventToProcess(pid: pid)
-
-            // Track recovery from degraded state
-            if !mouseEventsWorking {
-                mouseEventsWorking = true
-                methodStatus = .healthy(method: .caffeinate)
-                logger.info("Mouse events restored (accessibility permission granted)")
-
-                NotificationCenter.default.post(name: .methodStatusDidChange, object: nil)
-            }
-        } else {
-            // No accessibility - skip mouse events, rely on caffeinate -u only
-            if mouseEventsWorking {
-                mouseEventsWorking = false
-                methodStatus = .degraded(method: .caffeinate, reason: "No accessibility permission")
-                logger.warning("Accessibility permission lost - mouse events disabled, using caffeinate -u only")
-                NotificationCenter.default.post(name: .methodStatusDidChange, object: nil)
-            }
-        }
-
-        // Always declare system-level user activity to prevent screen lock
+        // Declare system-level user activity once for all sessions
         declareUserActivity()
 
-        eventCount += 1
-        lastEventTime = Date()
+        updatePublishedState()
 
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .caffeinateStateDidChange, object: nil)
+        }
+    }
+
+    /// Sends activity events to a single session's process.
+    private func sendActivityEventForSession(_ session: CaffeinateSession, hasAccessibility: Bool, app: NSRunningApplication? = nil) {
+        let pid = session.pid
+
+        if hasAccessibility {
+            let targetApp = app ?? NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == session.bundleID })
+            if let targetApp = targetApp {
+                let position = getTargetPosition(for: targetApp)
+                sendMouseMoveToProcess(pid: pid, position: position)
+                let offsetPosition = CGPoint(x: position.x + 1, y: position.y)
+                sendMouseMoveToProcess(pid: pid, position: offsetPosition)
+                sendMouseMoveToProcess(pid: pid, position: position)
+
+                // Send a shift key press/release to reset idle timers in web apps
+                sendKeyEventToProcess(pid: pid)
+            }
         }
     }
 
@@ -437,4 +522,3 @@ final class CaffeinateAppManager: ObservableObject {
         }
     }
 }
-

@@ -53,6 +53,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController(settings: settings)
         menuBarController.setup()
 
+        // Auto-start Keep-Awake if configured for login startup
+        if settings.startKeepAwakeOnLogin && settings.launchAtLogin {
+            KeepAwakeManager.shared.startIndefinite(scope: settings.defaultKeepAwakeScope)
+            logger.info("Auto-started Keep-Awake session on login")
+        }
+
         // Setup scheduling if enabled
         if settings.schedulingEnabled {
             ScheduleManager.shared.setSchedules(settings.schedules)
@@ -60,9 +66,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Start caffeinate app if enabled and has permissions
-        if settings.caffeinateAppEnabled, let bundleID = settings.caffeinateAppBundleID {
+        if settings.caffeinateAppEnabled, !settings.caffeinateTargets.isEmpty {
             if TargetingManager.shared.hasAccessibilityPermissions {
-                CaffeinateAppManager.shared.start(bundleID: bundleID, intervalSeconds: settings.caffeinateAppIntervalSeconds)
+                CaffeinateAppManager.shared.startAll(
+                    targets: settings.caffeinateTargets,
+                    intervalSeconds: settings.caffeinateAppIntervalSeconds
+                )
             } else {
                 logger.warning("Caffeinate App enabled but missing Accessibility permissions")
             }

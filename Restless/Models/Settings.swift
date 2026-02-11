@@ -49,6 +49,15 @@ enum LoggingLevel: String, Codable, CaseIterable {
     }
 }
 
+// MARK: - Caffeinate Target
+
+/// Represents a single app to keep active via caffeinate.
+struct CaffeinateTarget: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    var bundleID: String
+    var appName: String
+}
+
 // MARK: - App Settings
 
 /// Main settings model for the application.
@@ -56,10 +65,25 @@ enum LoggingLevel: String, Codable, CaseIterable {
 /// Named AppSettings to avoid conflict with SwiftUI.Settings scene.
 final class AppSettings: ObservableObject, Codable {
 
+    // MARK: - Constants
+
+    /// Maximum number of apps that can be caffeinated simultaneously.
+    static let maxCaffeinateTargets = 10
+
     // MARK: - General Settings
 
     /// Whether to launch the app at login.
     @Published var launchAtLogin: Bool = false
+
+    /// Whether to automatically start a Keep-Awake session after login.
+    /// Only effective when launchAtLogin is also enabled.
+    @Published var startKeepAwakeOnLogin: Bool = false {
+        didSet {
+            if startKeepAwakeOnLogin && !launchAtLogin {
+                startKeepAwakeOnLogin = false
+            }
+        }
+    }
 
     /// Default keep-awake mode when starting a session.
     @Published var defaultKeepAwakeMode: KeepAwakeMode = .indefinite
@@ -83,17 +107,8 @@ final class AppSettings: ObservableObject, Codable {
     /// Whether caffeinate app feature is enabled.
     @Published var caffeinateAppEnabled: Bool = false
 
-    /// Bundle ID of the app to keep active in background.
-    @Published var caffeinateAppBundleID: String? {
-        didSet {
-            // Security: Validate bundle ID format
-            if let bundleID = caffeinateAppBundleID {
-                if bundleID.isEmpty || bundleID.count > 256 {
-                    caffeinateAppBundleID = nil
-                }
-            }
-        }
-    }
+    /// Apps to keep active in the background (up to maxCaffeinateTargets).
+    @Published var caffeinateTargets: [CaffeinateTarget] = []
 
     /// Interval in seconds between activity events sent to the app.
     /// Security: Bounded to prevent DoS (15-600 seconds)
@@ -124,11 +139,13 @@ final class AppSettings: ObservableObject, Codable {
 
     enum CodingKeys: String, CodingKey {
         case launchAtLogin
+        case startKeepAwakeOnLogin
         case defaultKeepAwakeMode
         case defaultDurationMinutes
         case defaultKeepAwakeScope
         case caffeinateAppEnabled
-        case caffeinateAppBundleID
+        case caffeinateAppBundleID // Legacy: kept for migration only
+        case caffeinateTargets
         case caffeinateAppIntervalSeconds
         case schedules
         case schedulingEnabled
@@ -141,26 +158,36 @@ final class AppSettings: ObservableObject, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        startKeepAwakeOnLogin = try container.decodeIfPresent(Bool.self, forKey: .startKeepAwakeOnLogin) ?? false
         defaultKeepAwakeMode = try container.decodeIfPresent(KeepAwakeMode.self, forKey: .defaultKeepAwakeMode) ?? .indefinite
         defaultDurationMinutes = try container.decodeIfPresent(Int.self, forKey: .defaultDurationMinutes) ?? 60
         defaultKeepAwakeScope = try container.decodeIfPresent(KeepAwakeScope.self, forKey: .defaultKeepAwakeScope) ?? .systemAndDisplay
         caffeinateAppEnabled = try container.decodeIfPresent(Bool.self, forKey: .caffeinateAppEnabled) ?? false
-        caffeinateAppBundleID = try container.decodeIfPresent(String.self, forKey: .caffeinateAppBundleID)
+        caffeinateTargets = try container.decodeIfPresent([CaffeinateTarget].self, forKey: .caffeinateTargets) ?? []
         caffeinateAppIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .caffeinateAppIntervalSeconds) ?? 30
         schedules = try container.decodeIfPresent([Schedule].self, forKey: .schedules) ?? []
         schedulingEnabled = try container.decodeIfPresent(Bool.self, forKey: .schedulingEnabled) ?? true
         loggingLevel = try container.decodeIfPresent(LoggingLevel.self, forKey: .loggingLevel) ?? .basic
+
+        // Migration: old single bundleID → new targets array
+        if caffeinateTargets.isEmpty,
+           let oldBundleID = try container.decodeIfPresent(String.self, forKey: .caffeinateAppBundleID),
+           !oldBundleID.isEmpty {
+            caffeinateTargets = [CaffeinateTarget(bundleID: oldBundleID, appName: oldBundleID)]
+        }
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
+        try container.encode(startKeepAwakeOnLogin, forKey: .startKeepAwakeOnLogin)
         try container.encode(defaultKeepAwakeMode, forKey: .defaultKeepAwakeMode)
         try container.encode(defaultDurationMinutes, forKey: .defaultDurationMinutes)
         try container.encode(defaultKeepAwakeScope, forKey: .defaultKeepAwakeScope)
         try container.encode(caffeinateAppEnabled, forKey: .caffeinateAppEnabled)
-        try container.encodeIfPresent(caffeinateAppBundleID, forKey: .caffeinateAppBundleID)
+        try container.encode(caffeinateTargets, forKey: .caffeinateTargets)
+        // Note: caffeinateAppBundleID is no longer encoded (migrated to caffeinateTargets)
         try container.encode(caffeinateAppIntervalSeconds, forKey: .caffeinateAppIntervalSeconds)
         try container.encode(schedules, forKey: .schedules)
         try container.encode(schedulingEnabled, forKey: .schedulingEnabled)

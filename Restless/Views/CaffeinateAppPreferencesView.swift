@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - Caffeinate App Preferences View
 
 /// Preferences view for the Caffeinate App feature.
+/// Supports up to 10 simultaneous target apps.
 struct CaffeinateAppPreferencesView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject private var caffeinateManager = CaffeinateAppManager.shared
@@ -19,14 +20,12 @@ struct CaffeinateAppPreferencesView: View {
                     get: { settings.caffeinateAppEnabled },
                     set: { newValue in
                         if newValue && !targetingManager.hasAccessibilityPermission {
-                            // Show permission alert when trying to enable without permission
                             showingPermissionAlert = true
-                            // Still enable the setting so user can see the permissions section
                             settings.caffeinateAppEnabled = true
                         } else {
                             settings.caffeinateAppEnabled = newValue
                             if newValue {
-                                startCaffeinate()
+                                startAllTargets()
                             } else {
                                 caffeinateManager.stop()
                             }
@@ -36,7 +35,7 @@ struct CaffeinateAppPreferencesView: View {
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Enable Caffeinate App")
-                        Text("Keeps a background app active without moving your cursor")
+                        Text("Keeps background apps active without moving your cursor")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -76,19 +75,74 @@ struct CaffeinateAppPreferencesView: View {
                     SectionHeader("Permissions", icon: "lock.shield")
                 }
 
-                // MARK: - App Selection
+                // MARK: - Apps List
                 Section {
-                    HStack {
-                        Text("Target App")
-                        Spacer()
-                        Button(targetAppDisplayName) {
-                            targetingManager.refresh()
-                            showingAppPicker = true
+                    if settings.caffeinateTargets.isEmpty {
+                        Text("No apps selected. Click + to add an app.")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    } else {
+                        ForEach(settings.caffeinateTargets) { target in
+                            HStack {
+                                Image(systemName: "app.fill")
+                                    .frame(width: 20)
+                                    .foregroundColor(.secondary)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(displayName(for: target))
+                                        .fontWeight(.medium)
+                                    Text(target.bundleID)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                // Running status indicator
+                                if caffeinateManager.isRunning && caffeinateManager.targetAppNames.contains(where: {
+                                    $0 == displayName(for: target)
+                                }) {
+                                    Circle()
+                                        .fill(Color.green)
+                                        .frame(width: 8, height: 8)
+                                }
+
+                                Button {
+                                    removeTarget(target)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundColor(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.vertical, 2)
                         }
-                        .buttonStyle(.bordered)
                     }
 
-                    // Interval
+                    // Add button
+                    if settings.caffeinateTargets.count < AppSettings.maxCaffeinateTargets {
+                        Button {
+                            targetingManager.refresh()
+                            showingAppPicker = true
+                        } label: {
+                            HStack {
+                                Image(systemName: "plus.circle.fill")
+                                    .foregroundColor(.accentColor)
+                                Text("Add App")
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text("Maximum of \(AppSettings.maxCaffeinateTargets) apps reached")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } header: {
+                    SectionHeader("Apps", icon: "square.stack")
+                }
+
+                // MARK: - Settings
+                Section {
                     HStack {
                         Text("Activity Interval")
                         Spacer()
@@ -124,19 +178,19 @@ struct CaffeinateAppPreferencesView: View {
                         Text(statusText)
                             .foregroundColor(.secondary)
                         Spacer()
-                        if caffeinateManager.eventCount > 0 {
-                            Text("Events: \(caffeinateManager.eventCount)")
+                        if caffeinateManager.totalEventCount > 0 {
+                            Text("Events: \(caffeinateManager.totalEventCount)")
                                 .font(.caption)
                                 .monospacedDigit()
                         }
                     }
 
-                    if let appName = caffeinateManager.targetAppName, caffeinateManager.isRunning {
+                    if caffeinateManager.isRunning {
                         HStack {
-                            Text("Caffeinating")
+                            Text("Active")
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Text(appName)
+                            Text("\(caffeinateManager.activeTargetCount) of \(settings.caffeinateTargets.count) apps")
                                 .font(.caption)
                         }
                     }
@@ -151,11 +205,16 @@ struct CaffeinateAppPreferencesView: View {
                         }
                     }
 
-                    if !caffeinateManager.isRunning && settings.caffeinateAppBundleID != nil && targetingManager.hasAccessibilityPermission {
-                        Button("Start Now") {
-                            startCaffeinate()
+                    if !caffeinateManager.isRunning && !settings.caffeinateTargets.isEmpty && targetingManager.hasAccessibilityPermission {
+                        Button("Start All") {
+                            startAllTargets()
                         }
                         .buttonStyle(.borderedProminent)
+                    } else if caffeinateManager.isRunning {
+                        Button("Stop All") {
+                            caffeinateManager.stop()
+                        }
+                        .buttonStyle(.bordered)
                     }
                 } header: {
                     SectionHeader("Status", icon: "chart.bar")
@@ -164,16 +223,21 @@ struct CaffeinateAppPreferencesView: View {
         }
         .formStyle(.grouped)
         .sheet(isPresented: $showingAppPicker) {
-            AppPickerView(selectedBundleID: Binding(
-                get: { settings.caffeinateAppBundleID },
-                set: { newValue in
-                    settings.caffeinateAppBundleID = newValue
+            AppPickerView(
+                existingBundleIDs: Set(settings.caffeinateTargets.map { $0.bundleID }),
+                onSelect: { app in
+                    let target = CaffeinateTarget(bundleID: app.bundleID, appName: app.name)
+                    settings.caffeinateTargets.append(target)
                     settings.save()
                     if settings.caffeinateAppEnabled && targetingManager.hasAccessibilityPermission {
-                        startCaffeinate()
+                        caffeinateManager.startTarget(
+                            bundleID: target.bundleID,
+                            appName: target.appName,
+                            intervalSeconds: settings.caffeinateAppIntervalSeconds
+                        )
                     }
                 }
-            ))
+            )
         }
         .alert("Accessibility Permission Required", isPresented: $showingPermissionAlert) {
             Button("Grant Permission") {
@@ -184,14 +248,21 @@ struct CaffeinateAppPreferencesView: View {
             Text("Caffeinate App needs Accessibility permission to send activity events to background apps.\n\nRestless will be added to the Accessibility list. Just enable the checkbox to grant permission.")
         }
         .onReceive(NotificationCenter.default.publisher(for: .accessibilityPermissionChanged)) { _ in
-            // When permission is granted, try to start caffeinate if enabled
             if targetingManager.hasAccessibilityPermission && settings.caffeinateAppEnabled {
-                startCaffeinate()
+                startAllTargets()
             }
         }
     }
 
     // MARK: - Helpers
+
+    private func displayName(for target: CaffeinateTarget) -> String {
+        // Try to get the current name from running apps
+        if let app = targetingManager.runningUserApps.first(where: { $0.bundleID == target.bundleID }) {
+            return app.name
+        }
+        return target.appName
+    }
 
     private var statusColor: Color {
         if caffeinateManager.isRunning {
@@ -208,32 +279,31 @@ struct CaffeinateAppPreferencesView: View {
             return "Running"
         } else if !targetingManager.hasAccessibilityPermission {
             return "Waiting for Permission"
+        } else if settings.caffeinateTargets.isEmpty {
+            return "No Apps Selected"
         } else {
             return "Not Running"
         }
     }
 
-    private var targetAppDisplayName: String {
-        guard let bundleID = settings.caffeinateAppBundleID else {
-            return "Select App..."
-        }
-
-        // Find the app name from running apps
-        if let app = targetingManager.runningUserApps.first(where: { $0.bundleID == bundleID }) {
-            return app.name
-        }
-
-        // App not running - show bundle ID
-        return bundleID.components(separatedBy: ".").last ?? bundleID
+    private func removeTarget(_ target: CaffeinateTarget) {
+        // Stop caffeinating this target if running
+        caffeinateManager.stopTarget(bundleID: target.bundleID)
+        // Remove from settings
+        settings.caffeinateTargets.removeAll { $0.id == target.id }
+        settings.save()
     }
 
-    private func startCaffeinate() {
-        guard let bundleID = settings.caffeinateAppBundleID else { return }
+    private func startAllTargets() {
+        guard !settings.caffeinateTargets.isEmpty else { return }
         guard targetingManager.hasAccessibilityPermission else {
             showingPermissionAlert = true
             return
         }
-        caffeinateManager.start(bundleID: bundleID, intervalSeconds: settings.caffeinateAppIntervalSeconds)
+        caffeinateManager.startAll(
+            targets: settings.caffeinateTargets,
+            intervalSeconds: settings.caffeinateAppIntervalSeconds
+        )
     }
 }
 
@@ -241,7 +311,8 @@ struct CaffeinateAppPreferencesView: View {
 
 struct AppPickerView: View {
     @Environment(\.dismiss) private var dismiss
-    @Binding var selectedBundleID: String?
+    let existingBundleIDs: Set<String>
+    let onSelect: (RunningAppInfo) -> Void
     @ObservedObject private var targetingManager = TargetingManager.shared
 
     @State private var searchText = ""
@@ -272,7 +343,7 @@ struct AppPickerView: View {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(filteredApps) { app in
                         Button {
-                            selectedBundleID = app.bundleID
+                            onSelect(app)
                             dismiss()
                         } label: {
                             HStack {
@@ -289,15 +360,9 @@ struct AppPickerView: View {
                                 }
 
                                 Spacer()
-
-                                if selectedBundleID == app.bundleID {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.accentColor)
-                                }
                             }
                             .padding(.vertical, 6)
                             .padding(.horizontal, 8)
-                            .background(selectedBundleID == app.bundleID ? Color.accentColor.opacity(0.1) : Color.clear)
                             .cornerRadius(6)
                         }
                         .buttonStyle(.plain)
@@ -315,12 +380,12 @@ struct AppPickerView: View {
     private func refreshApps() {
         targetingManager.refresh()
 
-        // Deduplicate by bundle ID
+        // Deduplicate by bundle ID and exclude already-selected apps
         var seenBundleIDs = Set<String>()
         var uniqueApps: [RunningAppInfo] = []
 
         for app in targetingManager.runningUserApps {
-            if !seenBundleIDs.contains(app.bundleID) {
+            if !seenBundleIDs.contains(app.bundleID) && !existingBundleIDs.contains(app.bundleID) {
                 seenBundleIDs.insert(app.bundleID)
                 uniqueApps.append(app)
             }

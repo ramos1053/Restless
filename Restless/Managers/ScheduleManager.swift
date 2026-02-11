@@ -187,8 +187,11 @@ final class ScheduleManager: ObservableObject {
         // Start caffeinate if enabled
         if schedule.enableCaffeinate {
             let settings = AppSettings.load()
-            if let bundleID = settings.caffeinateAppBundleID {
-                caffeinateManager.start(bundleID: bundleID, intervalSeconds: settings.caffeinateAppIntervalSeconds)
+            if !settings.caffeinateTargets.isEmpty {
+                caffeinateManager.startAll(
+                    targets: settings.caffeinateTargets,
+                    intervalSeconds: settings.caffeinateAppIntervalSeconds
+                )
             }
         }
     }
