@@ -38,18 +38,27 @@ A macOS menu bar app that keeps your Mac awake and prevents screen lock. Built e
 
 ## Building and Running
 
-### 1. Open in Xcode
+### 1. Code Signing (required before first build)
+
+1. Open `Restless.xcodeproj` in Xcode
+2. Click the project in the Navigator → select the **Restless** target
+3. Go to **Signing & Capabilities**
+4. Set **Team** to your own Apple developer account (or "None / Sign to Run Locally" for ad-hoc)
+5. Optionally update **Bundle Identifier** (e.g. `com.yourname.Restless`)
+
+> **Note on re-signing:** Each time you build with Xcode using ad-hoc signing, macOS assigns a new code signature. If you previously granted Accessibility permission, you may need to remove and re-add Restless in **System Settings → Privacy & Security → Accessibility** after a rebuild.
+
+### 2. Open in Xcode
 
 ```bash
-cd /path/to/Restless
 open Restless.xcodeproj
 ```
 
-### 2. Build and Run
+### 3. Build and Run
 
-1. Select the "Restless" scheme
-2. Select "My Mac" as the run destination
-3. Press **Cmd+R** to build and run
+1. Select the **Restless** scheme
+2. Select **My Mac** as the run destination
+3. Press **⌘R** to build and run
 
 ### 3. First Launch
 
