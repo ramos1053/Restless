@@ -1,6 +1,6 @@
 # Restless
 
-macOS menu bar app that keeps your Mac awake. No third-party dependencies, no nonsense.
+macOS menu bar app that keeps your Mac awake. No third-party dependencies.
 
 **Requires:** macOS 13.0 (Ventura) or later
 
