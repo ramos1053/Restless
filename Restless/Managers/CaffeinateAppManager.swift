@@ -76,6 +76,10 @@ final class CaffeinateAppManager: ObservableObject {
     /// User activity assertion ID for IOPMAssertionDeclareUserActivity.
     private var userActivityAssertionID: IOPMAssertionID = IOPMAssertionID(0)
 
+    /// The most recent `caffeinate -u` task. Retained so it can be terminated
+    /// and reaped, preventing accumulation of orphaned/zombie subprocesses.
+    private var userActivityCaffeinateTask: Process?
+
     // MARK: - Initialization
 
     private init() {}
@@ -93,15 +97,27 @@ final class CaffeinateAppManager: ObservableObject {
         // Reject empty bundle IDs
         guard !bundleID.isEmpty else { return false }
 
-        // Security: Block system processes and critical apps
+        // Security: Block system processes and critical apps. Covers both the
+        // legacy (systempreferences) and modern (systemsettings) Settings bundle
+        // IDs plus security-sensitive surfaces.
         let blockedPrefixes = [
             "com.apple.finder",
             "com.apple.loginwindow",
             "com.apple.SecurityAgent",
+            "com.apple.securityagent",
             "com.apple.systempreferences",
+            "com.apple.systemsettings",
+            "com.apple.preferences",
+            "com.apple.keychainaccess",
             "com.apple.Terminal",
             "com.apple.dt.Xcode"
         ]
+
+        // Security: Never target ourselves.
+        if bundleID == Bundle.main.bundleIdentifier {
+            logger.warning("Security: Blocked caffeinate target (self): \(bundleID)")
+            return false
+        }
 
         for prefix in blockedPrefixes {
             if bundleID.hasPrefix(prefix) {
@@ -255,6 +271,12 @@ final class CaffeinateAppManager: ObservableObject {
         timer?.invalidate()
         timer = nil
 
+        // Terminate any outstanding user-activity caffeinate subprocess.
+        if let task = userActivityCaffeinateTask, task.isRunning {
+            task.terminate()
+        }
+        userActivityCaffeinateTask = nil
+
         // Release user activity assertion
         releaseUserActivityAssertion()
 
@@ -342,21 +364,40 @@ final class CaffeinateAppManager: ObservableObject {
 
     /// Sends activity events to a single session's process.
     private func sendActivityEventForSession(_ session: CaffeinateSession, hasAccessibility: Bool, app: NSRunningApplication? = nil) {
-        let pid = session.pid
+        guard hasAccessibility else { return }
 
-        if hasAccessibility {
-            let targetApp = app ?? NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == session.bundleID })
-            if let targetApp = targetApp {
-                let position = getTargetPosition(for: targetApp)
-                sendMouseMoveToProcess(pid: pid, position: position)
-                let offsetPosition = CGPoint(x: position.x + 1, y: position.y)
-                sendMouseMoveToProcess(pid: pid, position: offsetPosition)
-                sendMouseMoveToProcess(pid: pid, position: position)
+        // Security: Resolve the live running application for this bundle ID and
+        // re-verify it matches the session before posting any synthetic event.
+        // Never post to the cached session.pid directly: PIDs are reused by the
+        // kernel, so a stale PID could target an unrelated (possibly privileged)
+        // process.
+        let targetApp = app ?? NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == session.bundleID })
+        guard let targetApp = targetApp else { return }
 
-                // Send a shift key press/release to reset idle timers in web apps
-                sendKeyEventToProcess(pid: pid)
-            }
+        // Security: Confirm the resolved process still matches the session's
+        // recorded PID. If it changed, the process was replaced (PID reuse) and
+        // we must not target it.
+        guard targetApp.processIdentifier == session.pid else {
+            logger.warning("Security: Skipping event - PID for \(session.appName) no longer matches session")
+            return
         }
+
+        // Security: Re-validate the target is still an allowed user app and not
+        // a system/privileged process that may have claimed this bundle ID.
+        guard isValidTargetApp(bundleID: session.bundleID) else {
+            logger.warning("Security: Skipping event - \(session.bundleID) is no longer a valid target")
+            return
+        }
+
+        let pid = targetApp.processIdentifier
+        let position = getTargetPosition(for: targetApp)
+        sendMouseMoveToProcess(pid: pid, position: position)
+        let offsetPosition = CGPoint(x: position.x + 1, y: position.y)
+        sendMouseMoveToProcess(pid: pid, position: offsetPosition)
+        sendMouseMoveToProcess(pid: pid, position: position)
+
+        // Send a shift key press/release to reset idle timers in web apps
+        sendKeyEventToProcess(pid: pid)
     }
 
     /// Gets a target position within the app's window.
@@ -454,12 +495,28 @@ final class CaffeinateAppManager: ObservableObject {
             return
         }
 
+        // Terminate and clear any previous user-activity task so we never leak
+        // overlapping subprocesses.
+        if let existingTask = userActivityCaffeinateTask, existingTask.isRunning {
+            existingTask.terminate()
+        }
+        userActivityCaffeinateTask = nil
+
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
         task.arguments = ["-u", "-t", String(duration)]
+        // Reap the process on exit so it doesn't linger as a zombie.
+        task.terminationHandler = { [weak self] process in
+            DispatchQueue.main.async {
+                if self?.userActivityCaffeinateTask === process {
+                    self?.userActivityCaffeinateTask = nil
+                }
+            }
+        }
 
         do {
             try task.run()
+            userActivityCaffeinateTask = task
             logger.debug("Caffeinate user activity spawned")
 
             // If we were in userActivityOnly mode, we've recovered to caffeinate

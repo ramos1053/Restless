@@ -151,12 +151,19 @@ extension UserDefaults {
 extension NSApplication {
     /// Restarts the application.
     func restart() {
-        let url = URL(fileURLWithPath: Bundle.main.resourcePath!)
-        let path = url.deletingLastPathComponent().deletingLastPathComponent().absoluteString
+        // Security/robustness: avoid force-unwrapping resourcePath (which can be
+        // nil) and use the modern, non-deprecated Process API. Launch the app
+        // bundle by its own URL rather than deriving a path string.
+        let bundleURL = Bundle.main.bundleURL
         let task = Process()
-        task.launchPath = "/usr/bin/open"
-        task.arguments = [path]
-        task.launch()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = [bundleURL.path]
+        do {
+            try task.run()
+        } catch {
+            AppLogger.shared.error("Failed to relaunch app: \(error.localizedDescription)")
+            return
+        }
         self.terminate(nil)
     }
 }

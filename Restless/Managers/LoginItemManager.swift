@@ -154,6 +154,17 @@ final class LoginItemManager: ObservableObject {
     func generateLaunchAgentPlist() -> String {
         let appPath = Bundle.main.bundlePath
 
+        // Security: Write logs to a user-owned directory rather than the
+        // world-writable /tmp. Predictable paths under /tmp are a classic
+        // symlink-attack target (an attacker can pre-create the path as a
+        // symlink to a file they want overwritten with our log output).
+        let logDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Logs")
+            .appendingPathComponent("Restless")
+        let stdoutPath = logDir.appendingPathComponent("restless.log").path
+        let stderrPath = logDir.appendingPathComponent("restless.error.log").path
+
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -174,10 +185,10 @@ final class LoginItemManager: ObservableObject {
             <false/>
 
             <key>StandardOutPath</key>
-            <string>/tmp/restless.log</string>
+            <string>\(stdoutPath)</string>
 
             <key>StandardErrorPath</key>
-            <string>/tmp/restless.error.log</string>
+            <string>\(stderrPath)</string>
         </dict>
         </plist>
         """

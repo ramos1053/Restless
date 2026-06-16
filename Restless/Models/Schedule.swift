@@ -92,6 +92,12 @@ struct TimeOfDay: Codable, Equatable, Comparable {
         return Calendar.current.date(from: components) ?? referenceDate
     }
 
+    /// Creates a TimeOfDay from the given date's wall-clock time.
+    static func from(date: Date) -> TimeOfDay {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return TimeOfDay(hour: components.hour ?? 0, minute: components.minute ?? 0)
+    }
+
     /// Display string in HH:MM format.
     var displayString: String {
         return String(format: "%02d:%02d", hour, minute)
@@ -147,9 +153,13 @@ struct Schedule: Identifiable, Codable, Equatable {
         // Check if it's on an enabled day
         guard days.contains(date: date) else { return false }
 
-        // Check if current time is within the time window
-        let currentTime = TimeOfDay.now
-        return isTimeInWindow(currentTime)
+        // Check if the given date's time is within the time window.
+        // Security/correctness: evaluate the passed-in date rather than the
+        // current wall-clock time, otherwise next-activation/deactivation math
+        // (which probes future/boundary dates) can produce unintended always-on
+        // states.
+        let timeAtDate = TimeOfDay.from(date: date)
+        return isTimeInWindow(timeAtDate)
     }
 
     /// Checks if a given time is within the start/end window.
@@ -201,9 +211,19 @@ struct Schedule: Identifiable, Codable, Equatable {
 
         let endDate = endTime.date(on: date)
 
-        // If end time is "before" start time, it's overnight - add a day
+        // Overnight schedule (e.g., 22:00 - 06:00): the end time is "before" the
+        // start time on the clock. The deactivation falls on the next calendar
+        // day only when we are still in the evening portion of the window
+        // (current time >= startTime). If we have already crossed midnight
+        // (current time < endTime), the end time is later *today*, so we must
+        // NOT add a day — doing so kept keep-awake on for an extra ~24h.
         if endTime < startTime {
-            return Calendar.current.date(byAdding: .day, value: 1, to: endDate)
+            let currentTime = TimeOfDay.from(date: date)
+            if currentTime >= startTime {
+                return Calendar.current.date(byAdding: .day, value: 1, to: endDate)
+            }
+            // Past midnight, before end time: deactivation is today.
+            return endDate
         }
 
         return endDate

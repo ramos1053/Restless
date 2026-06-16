@@ -92,8 +92,12 @@ final class AppLogger {
         let osLog = osLog(for: category)
         let fileName = (file as NSString).lastPathComponent
 
-        // Log to OSLog
-        os_log("%{public}@", log: osLog, type: type, message)
+        // Log to OSLog.
+        // Security/privacy: mark the message payload as private so that the
+        // names and bundle identifiers of apps the user targets (and other
+        // potentially identifying details) are redacted in the system-wide
+        // unified log, which is readable by other local processes/admins.
+        os_log("%{private}@", log: osLog, type: type, message)
 
         // Add to buffer
         let entry = LogEntry(
