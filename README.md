@@ -14,7 +14,7 @@ The menu bar itself shows status icons for whatever's currently active, quick to
 
 ## Requirements
 
-- macOS 13.0 (Ventura) or later
+- macOS 14.0 (Sonoma) or later for a Release build (the Debug config still targets 13.0, but Release is what actually ships)
 - Xcode 15.0+ to build from source
 - Accessibility permission, but only if you use the Caffeinate App feature
 
@@ -48,9 +48,11 @@ Preferences has three tabs — General (login item, dock icon, keep-awake defaul
 
 Two mechanisms working together. `caffeinate -di -w PID` is Apple's own sleep-prevention utility — `-d` stops the display from sleeping, `-i` stops idle sleep, and `-w PID` ties the whole thing to Restless's lifetime. Alongside that, `caffeinate -u -t <duration>` periodically declares user activity, resetting the idle timer; these are spawned with overlapping durations so there's no gap in coverage. Together they keep the display on, stop the system from sleeping, and prevent both screen lock and the screensaver from kicking in.
 
-For the Caffeinate App feature specifically, Restless posts simulated mouse-move and keyboard events (a harmless Shift press/release) directly to the target process via `CGEvent.postToPid()` — which delivers them without stealing focus or moving your actual cursor.
+For the Caffeinate App feature specifically, Restless posts simulated mouse-move and keyboard events (a harmless Shift press/release) directly to the target process via `CGEvent.postToPid()` — which delivers them without stealing focus or moving your actual cursor. It supports up to 10 simultaneous targets, refuses to target a short list of sensitive system processes (Finder, the login window, SecurityAgent, System Settings, Keychain Access, Terminal, Xcode), and guards against PID reuse so it doesn't end up posting events to a different app that happened to inherit a tracked process ID.
 
 You can confirm it's working by running `pmset -g assertions` in Terminal and looking for a "caffeinate" assertion.
+
+If `caffeinate` itself fails to launch or dies unexpectedly, both Keep-Awake and Caffeinate App fall back to raw IOKit power assertions (`IOPMAssertionCreateWithName` / `IOPMAssertionDeclareUserActivity`) and report a "degraded" health state in the menu bar rather than silently doing nothing.
 
 ## Architecture
 
@@ -66,12 +68,15 @@ Restless/
 │   ├── TargetingManager.swift     # Running app enumeration
 │   ├── ScheduleManager.swift      # Time-based scheduling
 │   └── LoginItemManager.swift     # SMAppService integration
+├── Models/
+│   └── MethodHealth.swift         # Health/fallback state for the sleep-prevention methods
 ├── Views/
 │   ├── MenuBarView.swift          # Menu bar controller
 │   ├── PreferencesView.swift      # Preferences window
 │   └── ...                        # Tab-specific views
 ├── Utilities/
 │   ├── Logger.swift               # OSLog wrapper
+│   ├── AppSecurity.swift          # Path/input sanitization, rate limiting, settings-integrity checks
 │   └── Extensions.swift           # Helper extensions
 └── Resources/
     └── Assets.xcassets            # App icons and colors
