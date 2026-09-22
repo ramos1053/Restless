@@ -2,6 +2,12 @@
 
 A macOS menu bar app that keeps your Mac awake and stops the screen from locking. Built entirely on Apple's own frameworks — no third-party dependencies anywhere.
 
+<p align="center">
+  <img src="screenshots/menu-bar.png" alt="Restless menu bar dropdown" height="260">
+  <img src="screenshots/preferences-general.png" alt="Restless General preferences" height="260">
+  <img src="screenshots/preferences-caffeinate.png" alt="Restless Caffeinate App preferences" height="260">
+</p>
+
 ## What it does
 
 **Keep-Awake** stops the system from sleeping using the same `caffeinate`-based approach as KeepingYouAwake, and separately prevents screen lock by overlapping `caffeinate -u` calls to keep declaring user activity. You can run it indefinitely, for a set duration, or until a specific time, and choose whether it covers just the system or the system and display both.
