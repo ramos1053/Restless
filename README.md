@@ -1,6 +1,6 @@
 # Restless
 
-A macOS menu bar app that keeps your Mac awake and stops the screen from locking. Built entirely on Apple's own frameworks — no third-party dependencies anywhere.
+A macOS menu bar app that keeps your Mac awake and stops the screen from locking. It's built entirely on Apple's own frameworks, with no third-party dependencies anywhere.
 
 <p align="center">
   <img src="screenshots/menu-bar.png" alt="Restless menu bar dropdown" height="260">
@@ -12,9 +12,9 @@ A macOS menu bar app that keeps your Mac awake and stops the screen from locking
 
 **Keep-Awake** stops the system from sleeping using the same `caffeinate`-based approach as KeepingYouAwake, and separately prevents screen lock by overlapping `caffeinate -u` calls to keep declaring user activity. You can run it indefinitely, for a set duration, or until a specific time, and choose whether it covers just the system or the system and display both.
 
-**Caffeinate App** keeps a specific app or browser active in the background — sending invisible mouse and keyboard events straight to that process — without moving your actual cursor or interrupting whatever you're doing. It works even if the target app is minimized, and the activity interval is adjustable from 15 seconds up to 10 minutes.
+**Caffeinate App** keeps a specific app or browser active in the background by sending invisible mouse and keyboard events straight to that process, without moving your actual cursor or interrupting whatever you're doing. It works even if the target app is minimized, and the activity interval is adjustable from 15 seconds up to 10 minutes.
 
-**Scheduling** lets you set up time-based rules (9 AM–5 PM on weekdays, say), each of which can trigger keep-awake, the caffeinate app feature, or both, including overnight schedules and multiple schedules running at once.
+**Scheduling** lets you set up time-based rules (9 AM to 5 PM on weekdays, say), each of which can trigger keep-awake, the caffeinate app feature, or both, including overnight schedules and multiple schedules running at once.
 
 The menu bar itself shows status icons for whatever's currently active, quick toggles, duration presets (30 min / 1 hr / 2 hr), and schedule management.
 
@@ -32,11 +32,11 @@ Before the first build, open `Restless.xcodeproj`, select the Restless target's 
 open Restless.xcodeproj
 ```
 
-Select the Restless scheme, choose "My Mac" as the run destination, and press ⌘R. On first launch it appears in the menu bar (look for the moon/bolt icon) and Keep-Awake works immediately — no permissions needed for that part.
+Select the Restless scheme, choose "My Mac" as the run destination, and press ⌘R. On first launch it appears in the menu bar (look for the moon/bolt icon), and Keep-Awake works immediately with no permissions needed for that part.
 
 ## Permissions
 
-Accessibility permission is only required for Caffeinate App — sending activity events to other processes needs it, but plain Keep-Awake doesn't. When you turn on Caffeinate App, Restless shows a colored indicator (green for granted, red for required); clicking Grant Permission adds it to the Accessibility list automatically, and you just need to check the box next to Restless in System Settings. Once granted, Restless picks it up automatically.
+Accessibility permission is only required for Caffeinate App. Sending activity events to other processes needs it, but plain Keep-Awake doesn't. When you turn on Caffeinate App, Restless shows a colored indicator (green for granted, red for required); clicking Grant Permission adds it to the Accessibility list automatically, and you just need to check the box next to Restless in System Settings. Once granted, Restless picks it up automatically.
 
 One quirk worth knowing: rebuilding from Xcode with ad-hoc signing changes the code signature each time, which can mean removing and re-adding Restless in Accessibility settings after a rebuild.
 
@@ -48,13 +48,13 @@ Preferences → General → Launch at Login, which uses Apple's SMAppService API
 
 Click the menu bar icon to see current status, toggle keep-awake or caffeinate, jump to a duration preset, manage schedules, or open Preferences. The icon itself tells you what's active: a moon with Zzz means idle, a bolt outline means keep-awake is on, a cup and saucer means caffeinate is running, and a filled bolt means both.
 
-Preferences has three tabs — General (login item, dock icon, keep-awake defaults), Caffeinate App (target selection, activity interval, status), and Scheduling (add/edit/remove time-based rules).
+Preferences has three tabs: General (login item, dock icon, keep-awake defaults), Caffeinate App (target selection, activity interval, status), and Scheduling (add/edit/remove time-based rules).
 
 ## How it actually prevents sleep
 
-Two mechanisms working together. `caffeinate -di -w PID` is Apple's own sleep-prevention utility — `-d` stops the display from sleeping, `-i` stops idle sleep, and `-w PID` ties the whole thing to Restless's lifetime. Alongside that, `caffeinate -u -t <duration>` periodically declares user activity, resetting the idle timer; these are spawned with overlapping durations so there's no gap in coverage. Together they keep the display on, stop the system from sleeping, and prevent both screen lock and the screensaver from kicking in.
+Two mechanisms work together. `caffeinate -di -w PID` is Apple's own sleep-prevention utility: `-d` stops the display from sleeping, `-i` stops idle sleep, and `-w PID` ties the whole thing to Restless's lifetime. Alongside that, `caffeinate -u -t <duration>` periodically declares user activity, resetting the idle timer; these are spawned with overlapping durations so there's no gap in coverage. Together they keep the display on, stop the system from sleeping, and prevent both screen lock and the screensaver from kicking in.
 
-For the Caffeinate App feature specifically, Restless posts simulated mouse-move and keyboard events (a harmless Shift press/release) directly to the target process via `CGEvent.postToPid()` — which delivers them without stealing focus or moving your actual cursor. It supports up to 10 simultaneous targets, refuses to target a short list of sensitive system processes (Finder, the login window, SecurityAgent, System Settings, Keychain Access, Terminal, Xcode), and guards against PID reuse so it doesn't end up posting events to a different app that happened to inherit a tracked process ID.
+For the Caffeinate App feature specifically, Restless posts simulated mouse-move and keyboard events (a harmless Shift press/release) directly to the target process via `CGEvent.postToPid()`, which delivers them without stealing focus or moving your actual cursor. It supports up to 10 simultaneous targets, refuses to target a short list of sensitive system processes (Finder, the login window, SecurityAgent, System Settings, Keychain Access, Terminal, Xcode), and guards against PID reuse so it doesn't end up posting events to a different app that happened to inherit a tracked process ID.
 
 You can confirm it's working by running `pmset -g assertions` in Terminal and looking for a "caffeinate" assertion.
 
@@ -92,7 +92,7 @@ Key frameworks: `/usr/bin/caffeinate` for sleep prevention, IOKit for screen-loc
 
 ## Known limitations
 
-Restless isn't sandboxed — it needs to spawn caffeinate processes, create IOKit power assertions, and post CGEvents, none of which are sandbox-friendly — so Mac App Store distribution isn't in the cards without real changes. Accessibility permission also has to be granted manually every time (no way around that), and ad-hoc rebuilds may require re-granting it since the signature changes.
+Restless isn't sandboxed. It needs to spawn caffeinate processes, create IOKit power assertions, and post CGEvents, none of which are sandbox-friendly, so Mac App Store distribution isn't in the cards without real changes. Accessibility permission also has to be granted manually every time (no way around that), and ad-hoc rebuilds may require re-granting it since the signature changes.
 
 ## Troubleshooting
 
@@ -106,4 +106,4 @@ Inspired by [KeepingYouAwake](https://github.com/newmarcel/KeepingYouAwake) for 
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
